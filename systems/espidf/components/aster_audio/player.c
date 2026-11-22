@@ -52,8 +52,10 @@ static bool music_successor(const char *path, char out[ASTER_MEDIA_PATH_MAX])
     if (!current || !*current)
         return false;
     DIR *directory = opendir("/SD/music");
-    if (!directory)
+    if (!directory) {
+        ESP_LOGW("hifi_autoplay", "cannot open music directory: errno=%d", errno);
         return false;
+    }
     char first[ASTER_MEDIA_PATH_MAX] = {0};
     char chosen[ASTER_MEDIA_PATH_MAX] = {0};
     bool found_current = false;
@@ -121,6 +123,8 @@ static void local_auto_next_task(void *ctx)
                             ESP_LOGW("hifi_autoplay", "next failed: %d", result);
                         else
                             ESP_LOGI("hifi_autoplay", "next: %s", next);
+                    } else {
+                        ESP_LOGI("hifi_autoplay", "no successor for: %s", snapshot.path);
                     }
                 }
             } else if (snapshot.state != ASTER_MEDIA_ENDED) {
@@ -240,8 +244,10 @@ int aster_idf_player_register(void)
     if (registered)
         return registered;
     if (!atomic_load(&auto_next_running) &&
-        xTaskCreate(local_auto_next_task, "hifi_autoplay", 12288, NULL, 4, NULL) == pdPASS)
+        xTaskCreate(local_auto_next_task, "hifi_autoplay", 12288, NULL, 4, NULL) == pdPASS) {
         atomic_store(&auto_next_running, true);
+        ESP_LOGI("hifi_autoplay", "system playlist enabled");
+    }
     else if (!atomic_load(&auto_next_running))
         ESP_LOGW("hifi_autoplay", "task unavailable; APP will handle EOF while open");
     return 0;
