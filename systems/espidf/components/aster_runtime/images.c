@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 #include "files.h"
 #include "imgdec.h"
+#ifdef CONFIG_IDF_TARGET_ESP32S31
+#include "jpeg_hw.h"
+#endif
 #include "aster_idf_runtime.h"
 #include "esp_timer.h"
 #include <aster/aster.h>
@@ -72,9 +75,23 @@ static int32_t render(wasm_exec_env_t env, uint32_t path, uint32_t length, uint3
     args.dst_span = required;
     args.out_w = args.out_h = 0;
     uint32_t previous_ms = (uint32_t)(esp_timer_get_time() / 1000);
-    r = aster_imgdec_render_monitored(real, destination, args.cap_w, args.cap_h, &args.out_w,
-                                      &args.out_h, (args.flags & ASTER_IMG_F_NEAREST) != 0,
-                                      aster_idf_image_progress, &previous_ms);
+#ifdef CONFIG_IDF_TARGET_ESP32S31
+    /* Fast path: the FakePod_S31 JPEG engine owns hardware decode, MCU
+     * padding and fit scaling. All unsupported/memory-constrained images
+     * retain Aster's existing streaming TJpgDec fallback. */
+    r = aster_s31_jpeg_render(real, destination, args.cap_w, args.cap_h,
+                              &args.out_w, &args.out_h,
+                              (args.flags & ASTER_IMG_F_NEAREST) != 0,
+                              aster_idf_image_progress, &previous_ms);
+    if (r == ASTER_ECANCELLED) {
+        memcpy(source, &args, sizeof(args));
+        return r;
+    }
+    if (r != ASTER_OK)
+#endif
+        r = aster_imgdec_render_monitored(real, destination, args.cap_w, args.cap_h, &args.out_w,
+                                          &args.out_h, (args.flags & ASTER_IMG_F_NEAREST) != 0,
+                                          aster_idf_image_progress, &previous_ms);
     memcpy(source, &args, sizeof(args));
     return r;
 }
