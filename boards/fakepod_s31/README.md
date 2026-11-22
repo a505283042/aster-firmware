@@ -21,3 +21,5 @@ idf.py --preview -C boards/fakepod_s31/idf -B "$PWD/build/fakepod-s31/system" -p
 - 上方实体键可短按熄屏或唤醒，持续按住约 3 秒关机；关机后用同一按键开机。熄屏期间可继续播放。
 
 接线和适配器选择在 [板级注册](idf/aster_board.cmake)。诊断、已验证组合及仍待测项见 [Hi-Fi 设计与实施记录](../../docs/fakepod-s31-hifi-design.zh-CN.md)。
+
+**系统实现详解**：[媒体、内存、字体与 TF 卡协同实现](../../docs/fakepod-s31-media-resource-implementation.zh-CN.md)；说明 WAMR/PSRAM、SDMMC 与 LCD DMA、系统 cpfont 字体缓存、原生媒体任务、自动下一首和未解决的 I/O 竞争边界，并链接 APP 侧技术实现。
