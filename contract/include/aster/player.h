@@ -10,6 +10,7 @@
 #define ASTER_PLAYER_CAP_BT_SOURCE 16u
 #define ASTER_PLAYER_CAP_SPECTRUM 32u
 #define ASTER_PLAYER_CAP_SYSTEM_OUTPUT 64u /* PLAY_FILE can follow the system speaker selection. */
+#define ASTER_PLAYER_CAP_AUTO_NEXT 128u /* Firmware owns local music playlist, even after APP exit. */
 #define ASTER_PLAYER_LOCAL 1u
 #define ASTER_PLAYER_BLUETOOTH 2u
 #define ASTER_PLAYER_IDLE 0u
