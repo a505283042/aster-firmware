@@ -128,7 +128,21 @@ aster_error_t aster_s31_jpeg_render(const char *path, uint8_t *rgb565,
         fclose(file);
         return ASTER_ENOTSUP;
     }
-    size_t read_bytes = fread(compressed, 1, probe.file_size, file);
+    size_t read_bytes = 0;
+    while (read_bytes < probe.file_size) {
+        /* Bound each SD access and report progress to Aster's watchdog;
+         * input files can sit on slow cards while music is playing. */
+        size_t want = probe.file_size - read_bytes;
+        if (want > 8192u) want = 8192u;
+        size_t got = fread(compressed + read_bytes, 1, want, file);
+        if (!got) break;
+        read_bytes += got;
+        if (progress && !progress(context)) {
+            fclose(file);
+            heap_caps_free(compressed);
+            return ASTER_ECANCELLED;
+        }
+    }
     fclose(file);
     if (read_bytes != probe.file_size) {
         heap_caps_free(compressed);
