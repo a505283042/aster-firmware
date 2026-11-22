@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdatomic.h>
 bool aster_idf_bt_audio_info(aster_player_info_t *info);
 const char *aster_idf_bt_device_name(void);
 int aster_idf_bt_audio_control(uint32_t command);
@@ -19,7 +20,7 @@ int aster_idf_bt_audio_control(uint32_t command);
 /* FAT directory order is the order shown by HiFiPlayer. This task is the
  * only automatic-next owner once the capability is advertised: the APP no
  * longer needs to stay open to maintain a local playback queue. */
-static bool auto_next_running;
+static atomic_bool auto_next_running;
 static const char *music_basename(const char *path)
 {
     if (!strncmp(path, "/SD:/music/", 11))
@@ -134,7 +135,7 @@ static void local_auto_next_task(void *ctx)
 static int info(aster_player_info_t *out)
 {
     out->capabilities = ASTER_PLAYER_CAP_WAV | ASTER_PLAYER_CAP_FLAC;
-    if (auto_next_running)
+    if (atomic_load(&auto_next_running))
         out->capabilities |= ASTER_PLAYER_CAP_AUTO_NEXT;
 #ifdef ASTER_AUDIO_SPECTRUM_ENABLED
     out->capabilities |= ASTER_PLAYER_CAP_SPECTRUM;
@@ -238,10 +239,10 @@ int aster_idf_player_register(void)
     int registered = aster_player_service_register(&ops);
     if (registered)
         return registered;
-    if (!auto_next_running &&
-        xTaskCreate(local_auto_next_task, "hifi_autoplay", 6144, NULL, 4, NULL) == pdPASS)
-        auto_next_running = true;
-    else if (!auto_next_running)
+    if (!atomic_load(&auto_next_running) &&
+        xTaskCreate(local_auto_next_task, "hifi_autoplay", 12288, NULL, 4, NULL) == pdPASS)
+        atomic_store(&auto_next_running, true);
+    else if (!atomic_load(&auto_next_running))
         ESP_LOGW("hifi_autoplay", "task unavailable; APP will handle EOF while open");
     return 0;
 }
