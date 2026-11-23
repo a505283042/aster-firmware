@@ -2,6 +2,9 @@
 #include "aster_audio_decoder.h"
 #include "aster_audio_output.h"
 #include "aster_os.h"
+#ifdef ASTER_S31_AUDIO_PREFETCH
+#include "aster_audio_prefetch.h"
+#endif
 #include <errno.h>
 #include <limits.h>
 #include <string.h>
@@ -47,6 +50,12 @@ struct aster_audio_decoder {
     drflac *flac;
     drmp3 *mp3;
     mp3_index_t *index;
+#ifdef ASTER_S31_AUDIO_PREFETCH
+    /* FLAC only: decoder and ring producer never share a file handle. */
+    aster_audio_prefetch_t *prefetch;
+    char prefetch_path[256];
+    bool prefetch_disabled;
+#endif
 
     /* Newlib's int32_t can be long while dr_libs uses int. Do not alias the
   * caller's int32_t buffer through an incompatible int pointer. */
@@ -186,7 +195,14 @@ static size_t read_file(void *ctx, void *buffer, size_t bytes)
     while (done < bytes) {
         if (cancelled(d))
             break;
+#ifdef ASTER_S31_AUDIO_PREFETCH
+        int n = d->prefetch ?
+            aster_audio_prefetch_read(d->prefetch, (uint8_t *)buffer + done,
+                                      bytes - done, d->cancel, d->context) :
+            aster_os_file_read(&d->file, (uint8_t *)buffer + done, bytes - done);
+#else
         int n = aster_os_file_read(&d->file, (uint8_t *)buffer + done, bytes - done);
+#endif
         if (n < 0) {
             d->io_error = n;
             break;
@@ -228,6 +244,14 @@ static int seek_file(aster_audio_decoder_t *d, int offset, unsigned origin)
             return 0;
         at = base + (unsigned)offset;
     }
+#ifdef ASTER_S31_AUDIO_PREFETCH
+    /* dr_flac may seek during a read: stop/join the sequential producer
+     * before seeking the decoder's independent random-access file. */
+    if (d->prefetch) {
+        aster_audio_prefetch_stop(d->prefetch);
+        d->prefetch = NULL;
+    }
+#endif
     int r = aster_os_file_seek(&d->file, (int64_t)at, ASTER_OS_SEEK_SET);
     if (r) {
         d->io_error = r;
@@ -357,6 +381,13 @@ int aster_audio_decoder_close(aster_audio_decoder_t *d)
 {
     if (!d)
         return 0;
+#ifdef ASTER_S31_AUDIO_PREFETCH
+    /* Producer must terminate before any related file/memory is released. */
+    if (d->prefetch) {
+        aster_audio_prefetch_stop(d->prefetch);
+        d->prefetch = NULL;
+    }
+#endif
     if (d->flac)
         drflac_close(d->flac);
     if (d->wav) {
@@ -475,6 +506,16 @@ int aster_audio_decoder_open(const char *path, bool (*cancel)(void *), void *ctx
         r = -ENOTSUP;
         goto fail;
     }
+#ifdef ASTER_S31_AUDIO_PREFETCH
+    /* Stage H1 affects only FLAC. WAV and MP3/VBR indexing retain the
+     * established direct-read path until their buffering policy is ready. */
+    if (d->flac && strlen(path) < sizeof(d->prefetch_path)) {
+        memcpy(d->prefetch_path, path, strlen(path) + 1);
+        d->prefetch = aster_audio_prefetch_start(d->prefetch_path, d->cursor, d->length);
+        if (!d->prefetch)
+            d->prefetch_disabled = true; /* Original direct-read fallback. */
+    }
+#endif
     *out = d;
     return 0;
 fail:
@@ -496,6 +537,14 @@ int aster_audio_decoder_read(aster_audio_decoder_t *d, int32_t *pcm, uint32_t fr
         return -ECANCELED;
     if (d->io_error)
         return d->io_error;
+#ifdef ASTER_S31_AUDIO_PREFETCH
+    if (d->flac && !d->prefetch && !d->prefetch_disabled && d->prefetch_path[0]) {
+        /* Restart at the decoder cursor after any FLAC seek probe. */
+        d->prefetch = aster_audio_prefetch_start(d->prefetch_path, d->cursor, d->length);
+        if (!d->prefetch)
+            d->prefetch_disabled = true;
+    }
+#endif
     uint64_t n;
     if (d->mp3) {
         if (d->decoded >= 2048)
