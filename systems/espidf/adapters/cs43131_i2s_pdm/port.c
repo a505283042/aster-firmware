@@ -13,6 +13,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "aster_audio_output.h"
+#include "aster_audio_declick.h"
 #include "freertos/semphr.h"
 #include <stdatomic.h>
 #include <string.h>
@@ -35,7 +36,11 @@ static SemaphoreHandle_t hardware_lock;
 static atomic_bool native_owner;
 static aster_audio_format_t native_format;
 static uint64_t native_frames;
+static uint32_t native_preroll_frames;
 static uint32_t native_errors;
+/* With 8 x 128-frame DMA buffers, priming two 512-frame blocks
+ * doubles the initial runway without extra allocation. */
+enum { NATIVE_PREROLL_TARGET_FRAMES = 768, NATIVE_START_FADE_MS = 5 };
 static int native_register(void);
 static atomic_uint volume_pending;
 static int codec_volume_locked(uint8_t percent);
@@ -341,6 +346,7 @@ static void shutdown(void)
     converted = NULL;
     converted_capacity = 0;
     have_previous = false;
+    native_preroll_frames = 0;
     memset(&tx_config, 0, sizeof(tx_config));
     memset(&rx_config, 0, sizeof(rx_config));
 }
@@ -707,6 +713,7 @@ static int native_open(void *ctx, const aster_audio_format_t *format)
             native_format = *format;
             physical_rate = format->rate;
             native_frames = 0;
+            native_preroll_frames = 0;
             native_errors = 0;
         }
     }
@@ -723,25 +730,43 @@ static int native_write(void *ctx, const void *pcm, uint32_t frames)
                           : aster_audio_pcm_to_s32(pcm, frames, &native_format, converted,
                                                    converted_capacity / sizeof(int32_t));
     if (!r) {
+        /* Fade the first 5 ms only. The cursor counts accepted frames,
+         * so partial writes do not incorrectly advance the ramp. */
+        aster_audio_fade_in_s32_stereo(converted, frames, native_frames,
+                                      native_format.rate / (1000u / NATIVE_START_FADE_MS));
         size_t bytes = (size_t)frames * 2 * sizeof(int32_t), wrote = 0;
         esp_err_t status = tx_on ? i2s_channel_write(tx, converted, bytes, &wrote, 1000)
                                  : i2s_channel_preload_data(tx, converted, bytes, &wrote);
-        if (wrote % 8 || wrote > bytes)
+        if (wrote % 8 || wrote > bytes) {
             r = -EIO;
-        else if (wrote) {
+        } else if (wrote) {
             if (!tx_on) {
+                native_preroll_frames += (uint32_t)(wrote / 8);
+                /* Preload can be called repeatedly while TX is READY.
+                 * Start when enough samples are primed, or when DMA fills. */
+                if (native_preroll_frames >= NATIVE_PREROLL_TARGET_FRAMES ||
+                    wrote < bytes) {
+                    status = i2s_channel_enable(tx);
+                    if (status == ESP_OK)
+                        tx_on = true;
+                    else
+                        r = error(status);
+                }
+            }
+            if (!r) {
+                /* Preloaded bytes are accepted even before clocks start. */
+                r = (int)(wrote / 8);
+                native_frames += (uint32_t)r;
+            }
+        } else {
+            /* Avoid a zero-accept loop when disabled DMA storage is full. */
+            if (!tx_on && native_preroll_frames && status == ESP_OK) {
                 status = i2s_channel_enable(tx);
                 if (status == ESP_OK)
                     tx_on = true;
             }
-            if (!tx_on)
-                r = error(status);
-            else {
-                r = (int)(wrote / 8);
-                native_frames += r;
-            }
-        } else
             r = status == ESP_OK ? -EAGAIN : error(status);
+        }
     }
     if (r < 0 && r != -EAGAIN)
         native_errors++;
@@ -755,6 +780,15 @@ static int native_drain(void *ctx)
     if (!lock_hardware())
         return -ENODEV;
     int r = native_owner ? 0 : -EBADF;
+    /* Extremely short files may finish before the second PCM block.
+     * Start the pending preload before draining so they are audible. */
+    if (!r && !tx_on && native_preroll_frames) {
+        esp_err_t status = i2s_channel_enable(tx);
+        if (status == ESP_OK)
+            tx_on = true;
+        else
+            r = error(status);
+    }
     if (!r && tx_on)
         k_msleep(8 * 128 * 1000 / physical_rate + 2);
     unlock_hardware();
