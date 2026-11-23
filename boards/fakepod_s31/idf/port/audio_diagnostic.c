@@ -3,6 +3,7 @@
  * bounded. PCM includes a short envelope to avoid discontinuities at edges. */
 #include "aster_audio_output.h"
 #include "aster_media.h"
+#include "aster_audio_prefetch.h"
 #include "aster_platform.h"
 #include "esp_console.h"
 #include "esp_heap_caps.h"
@@ -116,6 +117,19 @@ static int media_command(int argc, char **argv)
         unsigned long ms = strtoul(argv[2], &end, 10);
         if (!*end && ms <= UINT32_MAX)
             r = aster_media_seek((uint32_t)ms);
+    } else if (argc == 2 && !strcmp(argv[1], "prefetch")) {
+        aster_audio_prefetch_window_t w;
+        r = aster_audio_prefetch_window(&w) ? 0 : -EIO;
+        if (!r)
+            printf("MEDIA PREFETCH active=%u buffered=%lu/%lu (%lu%%) eof=%u "
+                   "waits=%lu wait_max_ms=%lu error=%ld\n",
+                   w.active ? 1u : 0u,
+                   (unsigned long)w.buffered_bytes,
+                   (unsigned long)w.capacity_bytes,
+                   w.capacity_bytes ? (unsigned long)(100u * (uint64_t)w.buffered_bytes /
+                                                      w.capacity_bytes) : 0ul,
+                   w.eof ? 1u : 0u, (unsigned long)w.wait_count,
+                   (unsigned long)w.wait_max_ms, (long)w.io_error);
     } else if (argc == 2 && !strcmp(argv[1], "status")) {
         aster_media_snapshot_t s;
         r = aster_media_snapshot(&s);
@@ -195,7 +209,7 @@ void fakepod_audio_diagnostic_register(void)
     const esp_console_cmd_t media = {
         .command = "aster-media",
         .help =
-            "Native background WAV/FLAC: play /SD/... | pause | resume | seek MS | stop | status",
+            "Native background WAV/FLAC: play /SD/... | pause | resume | seek MS | stop | status | prefetch",
         .func = media_command};
     ESP_ERROR_CHECK(esp_console_cmd_register(&media));
     const esp_console_cmd_t cmd = {.command = "aster-audio",
