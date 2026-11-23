@@ -327,6 +327,7 @@ python -m unittest discover -s tests -p "test_stage_f1_lcd_runtime.py" -v
 - FLAC Seek 会终止并安全 join 旧生产者，然后在原有 decoder 文件上执行 seek；下次读取 PCM 时按新位置重新启动预取。切歌和关流同样先 join，再回收 PSRAM/文件资源。**禁止强删正在读取 FATFS 的任务**。
 - 内部 DMA/PSRAM 分配或创建任务失败时自动回退原始直接读卡方式。MP3/WAV、蓝牙发送/接收、HiFiPlayer WASM、JPEG/PPA、默认 LCD 双缓冲路径均未修改。
 - `aster_audio_prefetch_window()` 用原子快照返回缓存字节数、容量、EOF、等待次数与最长等待，以及错误状态；下个阶段后台 ArtworkTask 将据此控制可读取 TF 卡的窗口。**目前尚未接入封面任务**。
+- 串口命令 `aster-media prefetch` 可查看 `active`、`buffered/131072`、百分比、`waits`、`wait_max_ms` 和 `error`。此状态查询无文件 I/O；播放 MP3/WAV 或音乐停止时 `active=0`。
 - 缓存空时解码读取最多等待 2000 ms，超时报错以免永久阻塞；若读取速度长期低于消费速度，仍可能音频断供，后续应以实际低水位与等待计数确认。
 
 ### 构建与快速验证（保留 main 不变）
