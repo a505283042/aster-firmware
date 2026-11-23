@@ -133,7 +133,7 @@ aster_audio_prefetch_t *aster_audio_prefetch_start(const char *path,
         goto fail;
     if (aster_os_file_seek(&p->file, (int64_t)start_offset, ASTER_OS_SEEK_SET))
         goto fail;
-    atomic_store(&p->stopping, false);
+    atomic_init(&p->stopping, false);
     publish_empty();
     atomic_store(&window_active, true);
     const aster_os_task_config_t config = {
