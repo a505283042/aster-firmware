@@ -213,8 +213,14 @@ void aster_audio_prefetch_stop(aster_audio_prefetch_t *p)
         return;
     atomic_store(&p->stopping, true);
     if (p->worker.handle) {
-        /* Never delete a task while it might own an SDMMC/FatFs handle. */
-        (void)aster_os_task_join(&p->worker, ASTER_OS_WAIT_FOREVER);
+        /* Never delete a task while it might own an SDMMC/FatFs handle.
+         * If the OS unexpectedly cannot join, retain the buffers/handle
+         * rather than freeing memory the producer might still reference. */
+        int joined = aster_os_task_join(&p->worker, ASTER_OS_WAIT_FOREVER);
+        if (joined) {
+            atomic_store(&window_active, false);
+            return; /* Fail closed: intentionally retain resources. */
+        }
     }
     publish_empty();
     if (p->file.handle)
