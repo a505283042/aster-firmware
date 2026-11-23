@@ -314,3 +314,30 @@ python -m unittest discover -s tests -p "test_stage_f1_lcd_runtime.py" -v
 ```
 
 如果本地已经建立同名分支，请先 `git switch` 到该分支，再执行 `git pull --ff-only`；不要在有未提交修改的目录里覆盖源码。更新后只需一次构建、烧录与开机 `aster ui pipe status` 冒烟确认，不要求重新做多轮 A/B。
+
+
+## Stage H1：FLAC 压缩音频预取环，供后台封面调度使用
+
+参考 FakePod_S31 的 buffered_sd_audio_source.cpp 与 artwork_loader.cpp，先把 Aster 的 S31 FLAC **直接读取 TF 卡**改为后台预取方式。本阶段是实际代码改动，并非仅调整封面延迟参数。
+
+### 实现
+
+- `hifi_preload` 工作任务使用**独立文件句柄**，每块读取至多 8 KiB，累计 4 块后让出一个 RTOS tick；将压缩 FLAC 字节写入 128 KiB PSRAM 环。现有 dr_flac 解码器只读环，不会与预取任务同时使用相同文件句柄。
+- 任务优先级采用 Aster OS 数值 19（现有 media 解码工作线程为 18，即音频解码更优先），不增加 PCM 队列；环锁不会跨越文件系统读取持有。
+- FLAC Seek 会终止并安全 join 旧生产者，然后在原有 decoder 文件上执行 seek；下次读取 PCM 时按新位置重新启动预取。切歌和关流同样先 join，再回收 PSRAM/文件资源。**禁止强删正在读取 FATFS 的任务**。
+- 内部 DMA/PSRAM 分配或创建任务失败时自动回退原始直接读卡方式。MP3/WAV、蓝牙发送/接收、HiFiPlayer WASM、JPEG/PPA、默认 LCD 双缓冲路径均未修改。
+- `aster_audio_prefetch_window()` 用原子快照返回缓存字节数、容量、EOF、等待次数与最长等待，以及错误状态；下个阶段后台 ArtworkTask 将据此控制可读取 TF 卡的窗口。**目前尚未接入封面任务**。
+- 缓存空时解码读取最多等待 2000 ms，超时报错以免永久阻塞；若读取速度长期低于消费速度，仍可能音频断供，后续应以实际低水位与等待计数确认。
+
+### 构建与快速验证（保留 main 不变）
+
+```powershell
+cd D:\ESP32\aster-firmware
+git fetch origin
+git switch -c feat/s31-h1-audio-prefetch-ring-20261123 --track origin/feat/s31-h1-audio-prefetch-ring-20261123
+python -m unittest discover -s tests -p "test_s31_audio_prefetch.py" -v
+```
+
+在已配置的 ESP-IDF 6.1 / S31 环境下按照原流程 build、flash。先做本地 FLAC 顺序播放、Seek、连续切歌，以及停止音乐/返回桌面即可。此阶段不要求重复 LCD A/B。测试是源码约束 + host 实际环形数据/取消/EOF/资源释放，Windows 上如无本机 C 编译器则使用现有 RISC-V GCC 做语法检查，不能视作实机功能已通过。
+
+后续 H2 要在固件中把 ArtworkTask 与硬件 JPEG/PPA 放进独立后台任务，通过水位控制 SD 分块读取，并提供 APP `submit/poll/acquire` 接口。必须避免后台线程保存已退出的 WASM 线性内存指针。
