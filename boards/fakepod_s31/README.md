@@ -314,3 +314,33 @@ python -m unittest discover -s tests -p "test_stage_f1_lcd_runtime.py" -v
 ```
 
 如果本地已经建立同名分支，请先 `git switch` 到该分支，再执行 `git pull --ff-only`；不要在有未提交修改的目录里覆盖源码。更新后只需一次构建、烧录与开机 `aster ui pipe status` 冒烟确认，不要求重新做多轮 A/B。
+
+## Stage G1：HiFiPlayer 有线音乐启动预缓冲与消除开头突变（试用分支）
+
+现有 S31 本地音乐实际使用 `aster_media` → `CS43131 native_open/write/drain/close`。原生 CS43131 输出以前在首次写入最多 512 帧 PCM 后就启用 I2S；44.1 kHz 约只有 11.6 ms 的启动缓存。FLAC 切歌仍采取先 stop/close 再 open 新流，因此切歌间存在重新初始化时间。
+
+Stage G1 的最小修改仅作用于 **CS43131 原生有线输出**，不修改蓝牙、WASM HiFi APP、索引、LCD Stage F 或旧版 I2S 音效播放路径：
+
+- **启动预装填**：保持原本的 8×128 帧 DMA 描述符；首次最多 512 帧只写入 READY 状态的 I2S DMA 缓冲，不立即启动；累计达到至少 768 帧（典型为第二个 512 帧块）再启动。若 DMA 缓冲先满则立即启动并重试剩余数据，不额外分配音频内存。
+- **5 ms 轻微渐入**：对每首新流刚开始的 32-bit 立体声 PCM 做线性渐入；根据已实际接受的 PCM 帧数计算进度，部分写入不会重复或错过淡入。超过 5 ms 的样本不改变，保留后续音质。
+- **短文件兜底**：流自然结束时，如果还没达到启动阈值但已预装数据，`native_drain()` 会将它启动并排空，避免尾部短曲静默。
+- 保留原生输出关闭时 DAC 先静音再关时钟的安全顺序，不增加新的音频任务或调度器。
+
+这一阶段针对开头卡顿和爆音的两种**可能机制**：缓冲过浅、PCM 首采样突变。尚未实现连续轨无缝或停止端淡出，也无法仅凭代码保证消除所有问题。若有时仍短暂卡顿，下一步应加解码/存储阻塞、DMA 空转等定量诊断，而不是重复 LCD 测试。
+
+本地安装（需要先编译与烧录，旧 `main` 不受影响）：
+
+```powershell
+cd D:\ESP32\aster-firmware
+git fetch origin
+git switch -c feat/s31-audio-startup-preroll-declick-20261123 --track origin/feat/s31-audio-startup-preroll-declick-20261123
+python -m unittest discover -s tests -p "test_s31_native_audio_startup.py" -v
+
+& "D:\ESP32\aster-idf61-python\Scripts\python.exe" `
+    "$env:IDF_PATH\tools\idf.py" --preview `
+    -C boards/fakepod_s31/idf `
+    -B D:/ESP32/aster-firmware/build/fakepod-s31/system `
+    -DIDF_TARGET=esp32s31 build
+```
+
+复用原 COM3 烧录命令。只需在日常播放时观察返回 HiFiPlayer 后切歌是否仍有短暂爆音/卡顿，无需重复 Stage E/F 的多轮 A/B。需要恢复原来的音频行为，切回 `main` 并重新构建/烧录即可；单独执行 `aster ui pipe off` 仅关闭 LCD 双缓冲，不会关闭音频 G1 修改。
