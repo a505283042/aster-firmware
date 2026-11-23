@@ -12,8 +12,11 @@ FADE = ROOT / "common/audio/aster_audio_declick.h"
 
 class S31NativeAudioStartup(unittest.TestCase):
     def test_only_native_output_has_preroll_and_declick(self):
-        native = PORT[PORT.index("static int native_write("):
-                      PORT.index("static int native_register(")]
+        # native_register() is forward-declared near the top of port.c.
+        # Search for its definition *after* native_write(), not that prototype.
+        start = PORT.index("static int native_write(")
+        stop = PORT.index("static int native_register(", start)
+        native = PORT[start:stop]
         self.assertIn("aster_audio_fade_in_s32_stereo(converted, frames, native_frames", native)
         self.assertIn("native_preroll_frames += (uint32_t)(wrote / 8);", native)
         self.assertIn("native_preroll_frames >= NATIVE_PREROLL_TARGET_FRAMES", native)
@@ -26,10 +29,11 @@ class S31NativeAudioStartup(unittest.TestCase):
         self.assertIn("codec_volume_locked((uint8_t)aster_plat_audio_get_volume());", PORT)
         self.assertNotIn("aster_audio_fade_in_s32_stereo", PORT[:PORT.index("static int native_write(")])
 
-    def test_pcm_fade_math_host_c(self):
-        compiler = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
-        if not compiler:
-            self.skipTest("No host C compiler: source-contract test still passes")
+    def test_pcm_fade_math_compiles_and_runs_where_supported(self):
+        host_compiler = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+        cross_compiler = None if host_compiler else shutil.which("riscv32-esp-elf-gcc")
+        if not host_compiler and not cross_compiler:
+            self.skipTest("No host or cross C compiler: source-contract check still runs")
         c = r'''
 #include <stdint.h>
 #include <limits.h>
@@ -58,10 +62,18 @@ int main(void) {
             source = Path(d) / "declick.c"
             binary = Path(d) / "declick.exe"
             source.write_text(c, encoding="utf-8")
-            subprocess.run([compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
-                            "-I", str(FADE.parent), str(source), "-o", str(binary)],
-                           check=True, capture_output=True, text=True)
-            subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+            common_flags = ["-std=c11", "-Wall", "-Wextra", "-Werror",
+                            "-I", str(FADE.parent)]
+            if host_compiler:
+                # Native compiler: run the actual arithmetic assertions.
+                subprocess.run([host_compiler, *common_flags, str(source), "-o", str(binary)],
+                               check=True, capture_output=True, text=True)
+                subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+            else:
+                # The ESP RISC-V executable cannot run on Windows. Syntax-check
+                # the same C header with the configured firmware compiler.
+                subprocess.run([cross_compiler, *common_flags, "-fsyntax-only", str(source)],
+                               check=True, capture_output=True, text=True)
 
 
 if __name__ == "__main__":
